@@ -1,4 +1,4 @@
-<img width="2911" height="1468" alt="image" src="https://github.com/user-attachments/assets/e71eb2e5-7707-4bb3-b4d2-9b8d5bbcdc7a" /> Olist Store Analysis – E-commerce Data Analytics
+Olist Store Analysis – E-commerce Data Analytics
 
 Excel | MySQL | SQL | Power BI | Tableau
 
