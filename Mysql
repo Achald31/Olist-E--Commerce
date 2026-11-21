@@ -1,0 +1,412 @@
+
+
+USE ecommerce;
+
+
+-- ============================================================
+-- 1. WEEKDAY VS WEEKEND PAYMENT STATISTICS
+-- ============================================================
+
+WITH order_payments AS (
+    SELECT
+        order_id,
+        SUM(payment_value) AS total_payment
+    FROM olist_order_payments
+    GROUP BY order_id
+)
+SELECT
+    CASE
+        WHEN DAYOFWEEK(o.order_purchase_timestamp) IN (1, 7)
+        THEN 'WEEKEND'
+        ELSE 'WEEKDAY'
+    END AS day_type,
+
+    COUNT(DISTINCT o.order_id) AS total_orders,
+    ROUND(SUM(p.total_payment), 2) AS total_payments,
+    ROUND(AVG(p.total_payment), 2) AS average_order_payment
+
+FROM olist_orders o
+JOIN order_payments p
+    ON o.order_id = p.order_id
+
+GROUP BY day_type;
+
+
+-- ============================================================
+-- 2. NUMBER OF ORDERS WITH 5-STAR REVIEWS
+--    AND CREDIT CARD PAYMENTS
+-- ============================================================
+
+SELECT
+    COUNT(DISTINCT o.order_id)
+        AS high_rated_credit_card_orders
+
+FROM olist_orders o
+
+JOIN olist_review r
+    ON o.order_id = r.order_id
+
+JOIN olist_order_payments p
+    ON o.order_id = p.order_id
+
+WHERE r.review_score = 5
+  AND p.payment_type = 'credit_card'
+  AND o.order_status = 'delivered';
+
+
+-- ============================================================
+-- 3. AVERAGE DELIVERY DAYS FOR PET SHOP CATEGORY
+-- ============================================================
+
+WITH pet_orders AS (
+    SELECT DISTINCT
+        o.order_id,
+        o.order_purchase_timestamp,
+        o.order_delivered_customer_date
+
+    FROM olist_orders o
+
+    JOIN olist_order_items i
+        ON o.order_id = i.order_id
+
+    JOIN olist_products pd
+        ON i.product_id = pd.product_id
+
+    JOIN product_category_name_translation t
+        ON pd.product_category_name = t.product_category_name
+
+    WHERE t.product_category_name_english = 'pet_shop'
+      AND o.order_status = 'delivered'
+      AND o.order_delivered_customer_date IS NOT NULL
+)
+
+SELECT
+    ROUND(
+        AVG(
+            DATEDIFF(
+                order_delivered_customer_date,
+                order_purchase_timestamp
+            )
+        ), 2
+    ) AS avg_delivery_days_pet_shop
+
+FROM pet_orders;
+
+
+-- ============================================================
+-- 4. AVERAGE PRODUCT PRICE AND PAYMENT VALUE
+--    FOR SAO PAULO CUSTOMERS
+-- ============================================================
+
+WITH sao_paulo_orders AS (
+    SELECT
+        o.order_id
+
+    FROM olist_customers c
+
+    JOIN olist_orders o
+        ON c.customer_id = o.customer_id
+
+    WHERE LOWER(c.customer_city) = 'sao paulo'
+      AND o.order_status = 'delivered'
+),
+
+payment_per_order AS (
+    SELECT
+        order_id,
+        SUM(payment_value) AS total_payment
+
+    FROM olist_order_payments
+
+    GROUP BY order_id
+)
+
+SELECT
+    (
+        SELECT ROUND(AVG(p.total_payment), 2)
+
+        FROM sao_paulo_orders s
+
+        JOIN payment_per_order p
+            ON s.order_id = p.order_id
+
+    ) AS avg_payment_value,
+
+    (
+        SELECT ROUND(AVG(i.price), 2)
+
+        FROM sao_paulo_orders s
+
+        JOIN olist_order_items i
+            ON s.order_id = i.order_id
+
+    ) AS avg_product_price;
+
+
+-- ============================================================
+-- 5. DELIVERY DAYS VS CUSTOMER REVIEW SCORES
+-- ============================================================
+
+SELECT
+    r.review_score,
+
+    ROUND(
+        AVG(
+            DATEDIFF(
+                o.order_delivered_customer_date,
+                o.order_purchase_timestamp
+            )
+        ), 2
+    ) AS avg_delivery_days
+
+FROM olist_orders o
+
+JOIN olist_review r
+    ON o.order_id = r.order_id
+
+WHERE o.order_status = 'delivered'
+  AND o.order_delivered_customer_date IS NOT NULL
+
+GROUP BY r.review_score
+
+ORDER BY r.review_score;
+
+
+-- ============================================================
+-- 6. MONTHLY REVENUE AND ORDER GROWTH
+-- ============================================================
+
+WITH monthly_data AS (
+    SELECT
+        DATE_FORMAT(
+            o.order_purchase_timestamp,
+            '%Y-%m-01'
+        ) AS order_month,
+
+        COUNT(DISTINCT o.order_id) AS monthly_orders,
+
+        ROUND(SUM(p.payment_value), 2) AS monthly_revenue
+
+    FROM olist_orders o
+
+    JOIN olist_order_payments p
+        ON o.order_id = p.order_id
+
+    WHERE o.order_status = 'delivered'
+
+    GROUP BY order_month
+),
+
+growth_data AS (
+    SELECT
+        order_month,
+        monthly_orders,
+        monthly_revenue,
+
+        LAG(monthly_orders) OVER (
+            ORDER BY order_month
+        ) AS previous_month_orders
+
+    FROM monthly_data
+)
+
+SELECT
+    order_month,
+    monthly_orders,
+    monthly_revenue,
+
+    CASE
+        WHEN previous_month_orders IS NULL
+          OR previous_month_orders = 0
+        THEN NULL
+
+        ELSE ROUND(
+            (
+                monthly_orders - previous_month_orders
+            ) * 100.0 / previous_month_orders,
+            2
+        )
+    END AS order_growth_percentage
+
+FROM growth_data
+
+ORDER BY order_month;
+
+
+-- ============================================================
+-- 7. TOP 10 PRODUCT CATEGORIES BY REVENUE AND VOLUME
+-- ============================================================
+
+SELECT
+    t.product_category_name_english AS category,
+
+    COUNT(DISTINCT o.order_id) AS order_count,
+
+    COUNT(i.order_item_id) AS item_count,
+
+    ROUND(SUM(i.price), 2) AS total_product_revenue,
+
+    ROUND(SUM(i.freight_value), 2) AS total_freight_revenue
+
+FROM olist_orders o
+
+JOIN olist_order_items i
+    ON o.order_id = i.order_id
+
+JOIN olist_products pd
+    ON i.product_id = pd.product_id
+
+JOIN product_category_name_translation t
+    ON pd.product_category_name = t.product_category_name
+
+WHERE o.order_status = 'delivered'
+
+GROUP BY t.product_category_name_english
+
+ORDER BY total_product_revenue DESC
+
+LIMIT 10;
+
+
+-- ============================================================
+-- 8. PAYMENT METHOD ANALYSIS AND PERFORMANCE
+-- ============================================================
+
+WITH order_payment_type AS (
+    SELECT
+        order_id,
+        payment_type,
+        SUM(payment_value) AS total_payment
+
+    FROM olist_order_payments
+
+    GROUP BY order_id, payment_type
+)
+
+SELECT
+    p.payment_type,
+
+    COUNT(DISTINCT o.order_id) AS order_count,
+
+    ROUND(SUM(p.total_payment), 2) AS total_revenue,
+
+    ROUND(AVG(p.total_payment), 2) AS avg_order_payment
+
+FROM olist_orders o
+
+JOIN order_payment_type p
+    ON o.order_id = p.order_id
+
+WHERE o.order_status = 'delivered'
+
+GROUP BY p.payment_type
+
+ORDER BY total_revenue DESC;
+
+
+-- ============================================================
+-- 9. STATE-WISE DELIVERY PERFORMANCE
+--    AND CUSTOMER SATISFACTION
+-- ============================================================
+
+SELECT
+    c.customer_state,
+
+    COUNT(DISTINCT o.order_id) AS order_count,
+
+    ROUND(
+        AVG(
+            DATEDIFF(
+                o.order_delivered_customer_date,
+                o.order_purchase_timestamp
+            )
+        ), 2
+    ) AS avg_delivery_days,
+
+    ROUND(AVG(r.review_score), 2) AS avg_review_score
+
+FROM olist_customers c
+
+JOIN olist_orders o
+    ON c.customer_id = o.customer_id
+
+LEFT JOIN olist_review r
+    ON o.order_id = r.order_id
+
+WHERE o.order_status = 'delivered'
+  AND o.order_delivered_customer_date IS NOT NULL
+
+GROUP BY c.customer_state
+
+ORDER BY avg_review_score DESC,
+         avg_delivery_days ASC;
+
+
+-- ============================================================
+-- 10. TIME-OF-DAY ORDER ANALYSIS
+-- ============================================================
+
+WITH order_payment AS (
+    SELECT
+        order_id,
+        SUM(payment_value) AS total_payment
+
+    FROM olist_order_payments
+
+    GROUP BY order_id
+),
+
+time_data AS (
+    SELECT
+        o.order_id,
+        p.total_payment,
+
+        CASE
+            WHEN HOUR(o.order_purchase_timestamp)
+                BETWEEN 0 AND 5
+                THEN 'Night (00-06)'
+
+            WHEN HOUR(o.order_purchase_timestamp)
+                BETWEEN 6 AND 11
+                THEN 'Morning (06-12)'
+
+            WHEN HOUR(o.order_purchase_timestamp)
+                BETWEEN 12 AND 17
+                THEN 'Afternoon (12-18)'
+
+            ELSE 'Evening (18-24)'
+        END AS time_of_day
+
+    FROM olist_orders o
+
+    JOIN order_payment p
+        ON o.order_id = p.order_id
+
+    WHERE o.order_status = 'delivered'
+)
+
+SELECT
+    time_of_day,
+
+    COUNT(DISTINCT order_id) AS order_count,
+
+    ROUND(SUM(total_payment), 2) AS total_revenue,
+
+    ROUND(AVG(total_payment), 2) AS avg_order_value,
+
+    ROUND(
+        COUNT(DISTINCT order_id) * 100.0 /
+        SUM(COUNT(DISTINCT order_id)) OVER(),
+        2
+    ) AS order_percentage
+
+FROM time_data
+
+GROUP BY time_of_day
+
+ORDER BY total_revenue DESC;
+
+
+-- ============================================================
+-- END OF OLIST E-COMMERCE SQL BUSINESS ANALYSIS PROJECT
+-- ============================================================
